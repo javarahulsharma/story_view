@@ -10,11 +10,8 @@ import '../controller/story_controller.dart';
 
 class VideoLoader {
   String url;
-
   File? videoFile;
-
   Map<String, dynamic>? requestHeaders;
-
   LoadState state = LoadState.loading;
 
   VideoLoader(this.url, {this.requestHeaders});
@@ -23,10 +20,11 @@ class VideoLoader {
     if (this.videoFile != null) {
       this.state = LoadState.success;
       onComplete();
+      return;
     }
 
-    final fileStream = DefaultCacheManager()
-        .getFileStream(this.url, headers: this.requestHeaders as Map<String, String>?);
+    final fileStream = DefaultCacheManager().getFileStream(this.url,
+        headers: this.requestHeaders as Map<String, String>?);
 
     fileStream.listen((fileResponse) {
       if (fileResponse is FileInfo) {
@@ -36,6 +34,9 @@ class VideoLoader {
           onComplete();
         }
       }
+    }, onError: (error) {
+      this.state = LoadState.failure;
+      onComplete();
     });
   }
 }
@@ -46,20 +47,22 @@ class StoryVideo extends StatefulWidget {
   final Widget? loadingWidget;
   final Widget? errorWidget;
 
-  StoryVideo(this.videoLoader, {
-    Key? key,
-    this.storyController,
-    this.loadingWidget,
-    this.errorWidget,
-  }) : super(key: key ?? UniqueKey());
+  StoryVideo(
+      this.videoLoader, {
+        Key? key,
+        this.storyController,
+        this.loadingWidget,
+        this.errorWidget,
+      }) : super(key: key ?? UniqueKey());
 
-  static StoryVideo url(String url, {
-    StoryController? controller,
-    Map<String, dynamic>? requestHeaders,
-    Key? key,
-    Widget? loadingWidget,
-    Widget? errorWidget,
-  }) {
+  static StoryVideo url(
+      String url, {
+        StoryController? controller,
+        Map<String, dynamic>? requestHeaders,
+        Key? key,
+        Widget? loadingWidget,
+        Widget? errorWidget,
+      }) {
     return StoryVideo(
       VideoLoader(url, requestHeaders: requestHeaders),
       storyController: controller,
@@ -76,46 +79,64 @@ class StoryVideo extends StatefulWidget {
 }
 
 class StoryVideoState extends State<StoryVideo> {
-  Future<void>? playerLoader;
-
   StreamSubscription? _streamSubscription;
-
   VideoPlayerController? playerController;
+  bool isInitializing = false;
 
   @override
   void initState() {
     super.initState();
 
-    widget.storyController!.pause();
+    widget.storyController?.pause();
 
     widget.videoLoader.loadVideo(() {
       if (widget.videoLoader.state == LoadState.success) {
+        if (mounted) {
+          setState(() {
+            isInitializing = true;
+          });
+        }
+
         this.playerController =
             VideoPlayerController.file(widget.videoLoader.videoFile!);
 
         playerController!.initialize().then((v) {
-          setState(() {});
-          widget.storyController!.play();
+          if (mounted) {
+            setState(() {
+              isInitializing = false;
+            });
+            widget.storyController?.play();
+          }
+        }).catchError((error) {
+          if (mounted) {
+            setState(() {
+              isInitializing = false;
+            });
+          }
         });
 
         if (widget.storyController != null) {
           _streamSubscription =
               widget.storyController!.playbackNotifier.listen((playbackState) {
-            if (playbackState == PlaybackState.pause) {
-              playerController!.pause();
-            } else {
-              playerController!.play();
-            }
-          });
+                if (playbackState == PlaybackState.pause) {
+                  playerController?.pause();
+                } else {
+                  playerController?.play();
+                }
+              });
         }
       } else {
-        setState(() {});
+        if (mounted) {
+          setState(() {});
+        }
       }
     });
   }
 
   Widget getContentView() {
+    // Case 1: Video is successfully loaded and initialized
     if (widget.videoLoader.state == LoadState.success &&
+        playerController != null &&
         playerController!.value.isInitialized) {
       return Center(
         child: AspectRatio(
@@ -125,9 +146,12 @@ class StoryVideoState extends State<StoryVideo> {
       );
     }
 
-    return widget.videoLoader.state == LoadState.loading
-        ? Center(
-            child: widget.loadingWidget?? Container(
+    // Case 2: Still loading file OR initializing the player
+    // This is the CRITICAL FIX: show loading while initializing even if state is success
+    if (widget.videoLoader.state == LoadState.loading || isInitializing) {
+      return Center(
+        child: widget.loadingWidget ??
+            const SizedBox(
               width: 70,
               height: 70,
               child: CircularProgressIndicator(
@@ -135,14 +159,19 @@ class StoryVideoState extends State<StoryVideo> {
                 strokeWidth: 3,
               ),
             ),
-          )
-        : Center(
-            child: widget.errorWidget?? Text(
+      );
+    }
+
+    // Case 3: Failed to load or initialize
+    return Center(
+      child: widget.errorWidget ??
+          const Text(
             "Media failed to load.",
             style: TextStyle(
               color: Colors.white,
             ),
-          ));
+          ),
+    );
   }
 
   @override
